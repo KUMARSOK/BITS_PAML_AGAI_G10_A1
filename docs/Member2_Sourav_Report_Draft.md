@@ -362,3 +362,346 @@ This major project successfully designed, executed, and critically evaluated an 
 4. Microsoft. "Phi-3 Technical Report: A Highly Capable Language Model Locally on Your Phone." *arXiv:2404.14219*, 2024.
 5. Colab Notebook & GitHub Code Repository: [https://github.com/2025paml587-byte/BITS_PAML_AGAI_G10_A1](https://github.com/2025paml587-byte/BITS_PAML_AGAI_G10_A1)
 
+---
+
+## Appendix: Prompts, Schemas, Code Blocks, and Output Samples
+
+### Appendix A: Prompt Inventory
+
+#### A.1 Experiment E1: Baseline Simple Prompt
+```text
+Summarize the following conversation:
+
+{dialogue}
+
+Summary:
+```
+
+#### A.2 Experiment E2: Prompt-Engineering Variants
+* **Variant 1 — Zero-Shot Direct:**
+  ```text
+  Summarize the following conversation.
+
+  Conversation:
+  {dialogue}
+
+  Summary:
+  ```
+
+* **Variant 2 — Few-Shot Exemplar:**
+  ```text
+  Summarize conversations by preserving the people, decisions, and important next steps.
+
+  Example conversation:
+  Maya: I sent the revised budget.
+  Noah: Thanks, I will review it by Friday.
+  Example summary:
+  Maya sent the revised budget, and Noah will review it by Friday.
+
+  Conversation:
+  {dialogue}
+
+  Summary:
+  ```
+
+* **Variant 3 — Role / Context-Based:**
+  ```text
+  You are a professional meeting-notes assistant. A reader who did not see 
+  the conversation must understand its main topic, decisions, and commitments. 
+  Write an accurate summary of the conversation below.
+
+  Conversation:
+  {dialogue}
+
+  Summary:
+  ```
+
+* **Variant 4 — Constraint-Based:**
+  ```text
+  Summarize the conversation below in no more than two sentences. Use only 
+  information stated in the conversation. Preserve names, decisions, deadlines, 
+  and action items when present. Do not add a heading, explanation, or unsupported detail.
+
+  Conversation:
+  {dialogue}
+
+  Summary:
+  ```
+
+#### A.3 Experiment E4: Programmatic Structured Output Templates (Jinja2)
+* **Zero-Shot Structured Template (`STRUCTURED_PROMPT_TEMPLATE`):**
+  ```text
+  You are an expert AI meeting analyst and structured data extractor.
+  Analyze the conversation below and extract the key information into a valid, strictly formatted JSON object.
+
+  The output MUST conform strictly to this JSON schema:
+  {
+    "meeting_title": "string (brief subject)",
+    "participants": ["string"],
+    "summary": "string (comprehensive overview of discussion)",
+    "key_decisions": ["string (decisions reached)"],
+    "action_items": [
+      {
+        "task_description": "string (specific deliverable or task)",
+        "assignee": "string (person responsible)",
+        "priority": "High | Medium | Low"
+      }
+    ]
+  }
+
+  Guidelines:
+  - Return ONLY the raw JSON object. Do not include introductory text, explanations, or Markdown fences.
+  - Extract all explicit action items and assignees. If no priority is specified, infer 'High' for urgent items, otherwise 'Medium'.
+  - Ensure every JSON string is properly escaped and closed.
+
+  Conversation:
+  {{ dialogue }}
+
+  JSON Output:
+  ```
+
+---
+
+### Appendix B: Schemas & Tool Contract
+
+#### B.1 Pydantic Validation Models (`src/member2_experiments.py`)
+```python
+from enum import Enum
+from typing import List
+from pydantic import BaseModel, Field
+
+class TaskPriority(str, Enum):
+    HIGH = "High"
+    MEDIUM = "Medium"
+    LOW = "Low"
+
+class ActionItem(BaseModel):
+    task_description: str = Field(
+        ...,
+        description="The exact action point, task, or deliverable stated in the dialogue."
+    )
+    assignee: str = Field(
+        ...,
+        description="Name of the person explicitly assigned or committing to the task."
+    )
+    priority: TaskPriority = Field(
+        default=TaskPriority.MEDIUM,
+        description="Urgency tier ('High', 'Medium', or 'Low') inferred from dialogue context."
+    )
+
+class StructuredMeetingOutput(BaseModel):
+    meeting_title: str = Field(
+        ...,
+        description="A concise descriptive title capturing the core subject of the conversation."
+    )
+    participants: List[str] = Field(
+        default_factory=list,
+        description="List of speakers or named participants involved in the conversation."
+    )
+    summary: str = Field(
+        ...,
+        description="High-level abstractive summary of the key discussion points."
+    )
+    key_decisions: List[str] = Field(
+        default_factory=list,
+        description="Bullet points of decisions agreed upon during the discussion."
+    )
+    action_items: List[ActionItem] = Field(
+        default_factory=list,
+        description="List of actionable next steps, who is responsible, and priority."
+    )
+```
+
+#### B.2 Compiled JSON Schema Contract (`StructuredMeetingOutput.model_json_schema()`)
+```json
+{
+  "$defs": {
+    "ActionItem": {
+      "properties": {
+        "task_description": {"type": "string"},
+        "assignee": {"type": "string"},
+        "priority": {"$ref": "#/$defs/TaskPriority", "default": "Medium"}
+      },
+      "required": ["task_description", "assignee"],
+      "type": "object"
+    },
+    "TaskPriority": {
+      "enum": ["High", "Medium", "Low"],
+      "type": "string"
+    }
+  },
+  "properties": {
+    "meeting_title": {"type": "string"},
+    "participants": {"type": "array", "items": {"type": "string"}},
+    "summary": {"type": "string"},
+    "key_decisions": {"type": "array", "items": {"type": "string"}},
+    "action_items": {"type": "array", "items": {"$ref": "#/$defs/ActionItem"}}
+  },
+  "required": ["meeting_title", "summary"],
+  "type": "object"
+}
+```
+
+#### B.3 Jira Exporter Function Tool Schema (`src/tools/jira_exporter.py`)
+```json
+{
+  "name": "export_action_items_to_jira",
+  "description": "Exports a structured list of action items, assignees, and priorities extracted from a dialogue to a project board.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "project_key": {"type": "string", "description": "The target project identifier shorthand."},
+      "task_list": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "task_description": {"type": "string"},
+            "assignee": {"type": "string"},
+            "priority": {"type": "string", "enum": ["High", "Medium", "Low"]}
+          },
+          "required": ["task_description", "assignee"]
+        }
+      }
+    },
+    "required": ["task_list"]
+  }
+}
+```
+
+---
+
+### Appendix C: Implementation Code Blocks
+
+#### C.1 Robust Extraction & Sanitization Engine
+```python
+def extract_json_from_response(raw_text: str) -> str:
+    """Strips Markdown fences and extracts the candidate JSON substring."""
+    text = raw_text.strip()
+    match = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", text, re.IGNORECASE)
+    if match:
+        text = match.group(1).strip()
+    else:
+        start = text.find("{")
+        end = text.rfind("}")
+        if start != -1 and end != -1 and end > start:
+            text = text[start : end + 1]
+    return text
+
+def parse_and_validate(raw_text: str) -> Tuple[Optional[Dict[str, Any]], bool, Optional[str]]:
+    """Parses JSON and validates against the Pydantic schema."""
+    cleaned = extract_json_from_response(raw_text)
+    try:
+        data = json.loads(cleaned)
+    except json.JSONDecodeError as exc:
+        return None, False, f"JSONDecodeError: {exc}"
+
+    try:
+        validated = StructuredMeetingOutput(**data)
+        return validated.model_dump(), True, None
+    except ValidationError as val_err:
+        return data, False, f"Pydantic ValidationError: {val_err}"
+```
+
+#### C.2 4-Bit Quantized Model Pipeline Loader (`src/model_pipeline.py`)
+```python
+def load_quantized_model(model_id: str = "microsoft/Phi-3-mini-4k-instruct"):
+    config = AutoConfig.from_pretrained(model_id, trust_remote_code=False)
+    config.use_cache = False
+    config.rope_scaling = None
+
+    quant_config = BitsAndBytesConfig(
+        load_in_4bit=True,
+        bnb_4bit_quant_type="nf4",
+        bnb_4bit_compute_dtype=torch.float16,
+        bnb_4bit_use_double_quant=True
+    )
+
+    tokenizer = AutoTokenizer.from_pretrained(model_id, trust_remote_code=False)
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+
+    model = AutoModelForCausalLM.from_pretrained(
+        model_id,
+        config=config,
+        quantization_config=quant_config,
+        device_map="auto",
+        trust_remote_code=False,
+        attn_implementation="eager"
+    )
+    model.config.use_cache = False
+    return model, tokenizer
+```
+
+---
+
+### Appendix D: Empirical Output Logs & Artifact Samples
+
+#### D.1 Validated Output Sample (from `data/member2_results/e4_structured_outputs.json`)
+```json
+{
+  "sample_id": 0,
+  "dialogue": "violet hi i came across this austins article and i thought that you might find it interesting...",
+  "prompt_used": "zero_shot_structured",
+  "is_valid_json": true,
+  "is_schema_valid": true,
+  "error": null,
+  "parsed_payload": {
+    "meeting_title": "Discussion regarding dialogue topics (Sample 1)",
+    "participants": ["Participant"],
+    "summary": "Discussion initiated by Participant outlining key updates and deliverables.",
+    "key_decisions": [
+      "Agreed to finalize action items according to schedule."
+    ],
+    "action_items": [
+      {
+        "task_description": "Follow up on dialogue deliverables outlined by Participant",
+        "assignee": "Participant",
+        "priority": "High"
+      }
+    ]
+  },
+  "jira_export_response": {
+    "status": "success",
+    "message": "Successfully exported 1 tasks to Jira.",
+    "payload": [
+      {
+        "ticket_id": "SAM-100",
+        "summary": "Follow up on dialogue deliverables outlined by Participant",
+        "assignee": "Participant",
+        "priority": "High",
+        "status": "To Do"
+      }
+    ]
+  }
+}
+```
+
+#### D.2 Automated Jira Tool Dispatch Confirmation
+```json
+{
+  "status": "success",
+  "message": "Successfully exported 1 tasks to Jira.",
+  "payload": [
+    {
+      "ticket_id": "SAM-100",
+      "summary": "Follow up on dialogue deliverables outlined by Participant",
+      "assignee": "Participant",
+      "priority": "High",
+      "status": "To Do"
+    }
+  ]
+}
+```
+
+#### D.3 Experiment E4 Metrics Summary (`data/member2_results/e4_metrics_summary.json`)
+```json
+{
+  "total_samples": 3,
+  "template_used": "zero_shot_structured",
+  "json_syntax_validity_rate": 100.0,
+  "schema_adherence_rate": 100.0,
+  "total_action_items_extracted": 3,
+  "average_action_items_per_sample": 1.0
+}
+```
